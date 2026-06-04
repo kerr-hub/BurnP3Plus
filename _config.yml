@@ -1,0 +1,16 @@
+title: BurnP3+
+theme: minima
+description: BurnP3+ SyncroSim Package
+author: The Canadian Forest Service
+email: info@burnp3plus.ca
+header_pages:
+  - getting_started.md
+  - tutorials.md
+  - reference.md
+collections:
+  scenarios:
+    output: true
+  library:
+    output: true
+  project:
+    output: true

@@ -1,48 +1,13 @@
-# **BurnP3+**
+# Burn-P3+
 
-**BurnP3+** is an open-source [SyncroSim](http://www.syncrosim.com) package for running spatially-explicit fire growth models to explore fire risk and susceptibility across a landscape. 
+Burn-P3+ is a [SyncroSim](http://www.syncrosim.com) package that facilitates sampling spatially-explicit fire growth models to explore fire risk across a landscape. The package uses user-provided maps and rules to sample the ignitions and burn conditions that will be used as inputs for the external fire growth models. These fire growth models are provided as add-on packages to Burn-P3+. Two example fire growth model add-ons that wrap [Prometheus](https://github.com/BurnP3/BurnP3PlusPrometheus) and [Cell2Fire](https://github.com/BurnP3/BurnP3PlusCell2Fire) are provided, but developers can also [create their own](https://docs.syncrosim.com/how_to_guides/package_create_overview.html) add-on packages to provide additional fire growth models. The outputs of these models collected across realizations can then be summarized and visualized within SyncroSim or exported to plain text tabular formats and GDAL-compliant geospatial formats for more complex analyses using other tools.
 
-* See the [Home page](https://burnp3.github.io/BurnP3Plus/) for an overview of **BurnP3+**
-* See the [Getting Started](https://burnp3.github.io/BurnP3Plus/getting_started.html) page to get up and running quickly
+## Getting Started
 
-**BurnP3+** is funded, developed and maintained by the [Canadian Forest Service](https://www.nrcan.gc.ca/our-natural-resources/forests-forestry/the-canadian-forest-service/about-canadian-forest-service/17545).
+### Installation
 
-## Installing a BurnP3+ package from folder
+The burnP3 package can be [built](https://docs.syncrosim.com/how_to_guides/package_create_bundle.html#step-2---bundle-the-package) and [installed](https://docs.syncrosim.com/how_to_guides/package_manager.html#2-installing-from-a-package-file) from file like any other package using the [SyncroSim Package Manager](https://docs.syncrosim.com/how_to_guides/package_manager.html). However, some external fire growth models have other external dependencies. 
 
-Follow the instructions below to install the latest **BurnP3+** code from this GitHub repository as a package in SyncroSim Studio. The same instructions can also be used to install any of the **BurnP3+** fire growth transformer packages ([BurnP3+ Cell2Fire](https://github.com/BurnP3/BurnP3PlusCell2Fire), [BurnP3+ Prometheus](https://github.com/BurnP3/BurnP3PlusPrometheus), and [BurnP3+ FireSTARR](https://github.com/BurnP3/BurnP3PlusFireSTARR)). 
+### Running an Example
 
-1. Clone this **BurnP3Plus** repository 
-
-    - The BurnP3Plus repository can be cloned using either the command prompt or GitHub Desktop. For detailed instructions, see the official GitHub guide here: [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository#cloning-a-repository).
-
-    - Cloning the repository will create a folder named **BurnP3Plus** in your current directory containing all repository files.
-
-    ![Repository folder location.](./Figures/repo-folder-location.png)
-
-<br>
-
-2. Install the **BurnP3Plus** package from folder in SyncroSim Studio 
-
-    - Open [SyncroSim Studio](https://syncrosim.com/download/).
-
-    -  Navigate to **File > Local Packages**. 
-
-    ![File > Local packages.](./Figures/file-local-packages.png)
-
-    - Click **Install from Folder...**.
-
-    ![Local packages window.](./Figures/local-packages-window.png)
-
-    - Select the **src** subfolder from within the cloned **BurnP3Plus** repository and click **OK**. 
-
-    ![Browse for folder.](./Figures/browse-for-folder.png)
-
-    - The **burnP3Plus** package should now appear in the **Local Packages** list.
-
-    ![Installed burnP3Plus package.](./Figures/burnP3Plus-package.png)
-
-<br>
-
-> _**NOTE**: If you modify the package version number in the src/package.xml file of the folder, or you pull a more recent version of the package folder from the GitHub repository, you may run into an error when you try to open your BurnP3+ library. See [this forum post](https://community.syncrosim.com/forums/topic/syncrosim-package-version-mismatch/) for more information on how to handle this error._
-
-<br>
+This package comes with a template library with data from Glacier National Park. Both the Promtheus and Cell2Fire add-on packages are required if you would like to run all the included scenarios.

@@ -1,106 +1,146 @@
-# Setup ----
-Sys.unsetenv("PROJ_LIB")
 library(rsyncrosim)
+library(tidyverse)
+library(raster)
 
-# Find location of shared function definitions and source
-getSharedDefinitionsPath <- function() {
-  sharedDefinitionsPath <- paste0(ssimEnvironment()$PackageDirectory, "/shared.R")
-  return(sharedDefinitionsPath)
-}
-source(getSharedDefinitionsPath())
+# Setup ----
+progressBar(type = "message", message = "Preparing inputs...")
+
+# Initialize first breakpoint for timing code
+currentBreakPoint <- proc.time()
 
 ## Connect to SyncroSim ----
+myScenario <- scenario()
 
-# Load relevant datasheets
-DeterministicIgnitionLocation <- datasheet(myScenario, "burnP3Plus_DeterministicIgnitionLocation", optional = T, returnInvisible = T) %>% unique
-DeterministicBurnCondition <- datasheet(myScenario, "burnP3Plus_DeterministicBurnCondition", optional = T, returnInvisible = T) %>% unique
+# Load Run Controls and identify iterations to run
+RunControl <- datasheet(myScenario, "burnP3Plus_RunControl")
+iterations <- seq(RunControl$MinimumIteration, RunControl$MaximumIteration)
+
+# Load remaining datasheets
+DeterministicIgnitionLocation <- datasheet(myScenario, "burnP3Plus_DeterministicIgnitionLocation") %>% unique %>% filter(Iteration %in% iterations)
+FuelTypeTable <- datasheet(myScenario, "burnP3Plus_FuelType")
 FireZoneTable <- datasheet(myScenario, "burnP3Plus_FireZone")
 WeatherZoneTable <- datasheet(myScenario, "burnP3Plus_WeatherZone")
-DistributionValue <- datasheet(myScenario, "burnP3Plus_DistributionValue", optional = T, lookupsAsFactors = F)
-SeasonTable <- datasheet(myScenario, "burnP3Plus_Season", returnInvisible = T) %>% dplyr::filter(is.na(IsAuto))
-FireDurationTable <- datasheet(myScenario, "burnP3Plus_FireDuration", optional = T, lookupsAsFactors = F, returnInvisible = T)
-HoursBurningTable <- datasheet(myScenario, "burnP3Plus_HoursPerDayBurning", optional = T, lookupsAsFactors = F, returnInvisible = T)
-WeatherStream <- datasheet(myScenario, "burnP3Plus_WeatherStream", optional = T, lookupsAsFactors = F)
+DistributionValue <- datasheet(myScenario, "burnP3Plus_DistributionValue")
+
+# Load weather and burn condition table
+FireDurationTable <- datasheet(myScenario, "burnP3Plus_FireDuration", optional = T)
+HoursBurningTable <- datasheet(myScenario, "burnP3Plus_HoursPerDayBurning", optional = T)
+WeatherStream <- datasheet(myScenario, "burnP3Plus_WeatherStream", optional = T)
 WeatherOptions <- datasheet(myScenario, "burnP3Plus_WeatherOption")
 
 # Import relevant rasters, allowing for missing values
-fuelsRaster <- loadSpatial$fuels()
-fireZoneRaster <- loadSpatial$firezone()
-weatherZoneRaster <- loadSpatial$weatherzone()
+fuelsRaster <- datasheetRaster(myScenario, "burnP3Plus_LandscapeRasters", "FuelGridFileName")
+fireZoneRaster <- tryCatch(
+  datasheetRaster(myScenario, "burnP3Plus_LandscapeRasters", "FireZoneGridFileName"),
+  error = function(e) NULL)
+weatherZoneRaster <- tryCatch(
+  datasheetRaster(myScenario, "burnP3Plus_LandscapeRasters", "WeatherZoneGridFileName"),
+  error = function(e) NULL)
 
-## Parse and validate datasheets ----
-validateAndParseData$Season()
-validateAndParseData$Zones()
-validateAndParseData$DeterminsiticIgnitions()
-validateAndParseData$BurnConditionSampling()
+## Handle empty values ----
+if(nrow(WeatherStream) == 0) {
+  stop("Error: Please provide weather stream data to sample burning conditions.")
+}
+
+if(nrow(FireDurationTable) == 0) {
+  updateRunLog("No fire duration distribution provided, defaulting to 1 day fires.", type = "warning")
+  FireDurationTable[1,"Mean"] <- 1
+  saveDatasheet(myScenario, FireDurationTable, "burnP3Plus_FireDuration")
+}
+
+if(nrow(HoursBurningTable) == 0) {
+  updateRunLog("No hours burning per day distribution provided, defaulting to 4 hours of burning per burn day.", type = "warning")
+  HoursBurningTable[1,"Mean"] <- 4
+  saveDatasheet(myScenario, HoursBurningTable, "burnP3Plus_HoursPerDayBurning")
+}
+
+if(nrow(FireZoneTable) == 0)
+  FireZoneTable <- data.frame(Name = "", ID = 0)
+if(nrow(WeatherZoneTable) == 0)
+  WeatherZoneTable <- data.frame(Name = "", ID = 0)
 
 ## Function Definitions ----
+
+# Function to time code by returning a clean string of time since this function was last called
+updateBreakpoint <- function() {
+  # Calculate time since last breakpoint
+  newBreakPoint <- proc.time()
+  elapsed <- (newBreakPoint - currentBreakPoint)['elapsed']
+  
+  # Update current breakpoint
+  currentBreakPoint <<- newBreakPoint
+  
+  # Return cleaned elapsed time
+  if (elapsed < 60) {
+    return(str_c(round(elapsed), "sec"))
+  } else if (elapsed < 60^2) {
+    return(str_c(round(elapsed / 60, 1), "min"))
+  } else
+    return(str_c(round(elapsed / 60 / 60, 1), "hr"))
+}
+
+# Define function to facilitate recoding a vector using a look-up table
+lookup <- function(x, old, new){
+  dplyr::recode(x, !!!set_names(new, old))
+}
+
+# Function to find the number of unique values in a column of a data.frame
+uni <- function(df, colName) {
+  return(df[colName] %>% unique %>% nrow)
+}
+
+# Function to parse a table defining a normal distribution and sample accordingly
+sampleNorm <- function(df, numSamples, defaultMean = 1, defaultSD = 0, defaultMin = 1, defaultMax = Inf) {
+  
+  distributionMean <- ifelse(is.na(df$Mean),            defaultMean, df$Mean)
+  distributionSD   <- ifelse(is.na(df$DistributionSD),  defaultSD,   df$DistributionSD)
+  distributionMin  <- ifelse(is.na(df$DistributionMin), defaultMin,  df$DistributionMin)
+  distributionMax  <- ifelse(is.na(df$DistributionMax), defaultMax,  df$DistributionMax)
+  
+  rnorm(numSamples, distributionMean, distributionSD) %>%
+    round(0) %>%
+    pmax(distributionMin) %>%
+    pmin(distributionMax) %>%
+    return
+}
 
 # Define function to sample days burning and hours per day burning given season and fire zone
 sampleFireDuration <- function(season, firezone, data){
   # Determine fire duration distribution type to use
   # This is a function of season and firezone
   filteredFireDurationTable <- FireDurationTable %>%
-    dplyr::filter(
-      Season == season | is.na(Season) | Season == "All" | season == "All",
-      FireZone == firezone | is.na(FireZone))
-
+    filter(Season == season | is.na(Season), FireZone == firezone | is.na(FireZone))
+  
   fireDurationDistributionName <- filteredFireDurationTable %>%
-    pull(DistributionType) %>%
-    {if(length(.) == 0) {stop("No spread event days distribution set for the \"", season, "\" Season and the \"", firezone, "\" Fire Zone. Please check the Spread Event Days table for missing combinations of Season and Fire Zone.")} else .} %>%
-    {if(length(.) > 1 & !all(is.na(.))) {updateRunLog("Multiple fire duration distributions applicable for one or more combinations of season and fire zone. Using first applicable distribution.", type = "warning"); .[1]} else .}
-
+    pull(DistributionType)
+  
   # Determine hours burning per day distribution type to use
   # This is a function of season only
   filteredHoursBurningTable <- HoursBurningTable %>%
-    dplyr::filter(Season == season | is.na(Season) | Season == "All" | season == "All")
-
+    filter(Season == season | is.na(Season))
+  
   hoursBurningDistributionName <- filteredHoursBurningTable %>%
-    pull(DistributionType) %>%
-    {if(length(.) == 0) {stop("No daily burning hours distribution set for the \"", season, "\" Season and the \"", firezone, "\" Fire Zone. Please check the Daily Burning Hours table for missing combinations of Season and Fire Zone.")} else .} %>%
-    {if(length(.) > 1 & !all(is.na(.))) {updateRunLog("Multiple hours burning distributions applicable for one or more seasons. Using first applicable distribution.", type = "warning"); .[1]} else .}
-
+    pull(DistributionType)
+  
   # Sample fire durations
-
+  
   # If no distribution is specified
   if(is.na(fireDurationDistributionName)) {
-    # Filter out zero burn days
-    filteredFireDurationTable <- filteredFireDurationTable %>%
-      dplyr::filter(Mean >= 1)
-    # Make sure at least one valid entry remains
-    if (nrow(filteredFireDurationTable) == 0)
-      stop("Could not find a valid fire duration for the Season ", season, " and Fire Zone ", firezone, ". Please check your Spread Event Days datasheet.")
-
-    fireDurations <- sample(rep(filteredFireDurationTable$Mean, 2), nrow(data), replace = T)
-
-    # If sampling form a normal distribution
+    fireDurations <- rep(filteredFireDurationTable$Mean, nrow(data))
+    
+  # If sampling form a normal distribution
   } else if (fireDurationDistributionName == "Normal") {
     fireDurations <- sampleNorm(filteredFireDurationTable, nrow(data))
-
-    # If sampling form a gamma distribution
-  } else if (fireDurationDistributionName == "Gamma") {
-    fireDurations <- sampleGamma(filteredFireDurationTable, nrow(data))
-
-    # Otherwise sample from a user defined distribution
-  } else {
-    fireDurationDistribution <- DistributionValue %>% dplyr::filter(Name == fireDurationDistributionName)
     
-    # Check that a valid distribution is actually defined
-    if (nrow(fireDurationDistribution) == 0)
-      stop("No valid spread event day distribution values found for the distribution: ", fireDurationDistribution)
-        
-    if (nrow(fireDurationDistribution) == 1) {
-      fireDurations <- rep(fireDurationDistribution$Value, nrow(data))
-    } else {
-      fireDurations <- sample(fireDurationDistribution$Value, nrow(data), replace = T, prob = fireDurationDistribution$RelativeFrequency)
-    }
+  # Otherwise sample from a user defined distribution
+  } else {
+    fireDurationDistribution <- DistributionValue %>% filter(Name == fireDurationDistributionName)
+    fireDurations <- sample(fireDurationDistribution$Value, nrow(data), replace = T, prob = fireDurationDistribution$RelativeFrequency)
   }
-
-  fireDurations <- as.integer(round(fireDurations, 0))
-
+  
   # Update SyncroSim progress bar
   progressBar()
-
+  
   # Add a record for each burning day, sample the number of hours burning for each
   # Finally add season and fire zone back to the dataframe and return
   fireDurations %>%
@@ -109,37 +149,20 @@ sampleFireDuration <- function(season, firezone, data){
         slice(.y) %>%
         expand_grid(BurnDay = seq(.x))) %>%
     mutate(
-      HoursBurning =
+      HoursBurning = 
         # If no distribution is provided
         if (is.na(hoursBurningDistributionName)) {
-          # Filter out zero hour burn days
-          filteredHoursBurningTable <- filteredHoursBurningTable %>%
-            dplyr::filter(Mean >= 1)
-          # Make sure at least one valid entry remains
-          if (nrow(filteredHoursBurningTable) == 0)
-            stop("Could not find a valid daily burn duration for the Season ", season, " and Fire Zone ", firezone, ". Please check your Daily Burning Hours datasheet.")
-
-          sample(rep(filteredHoursBurningTable$Mean, 2), nrow(.), replace = T)
-
-          # If sampling from a normal distribution
+          rep(filteredHoursBurningTable$Mean, nrow(.))
+        
+        # If sampling from a normal distribution
         } else if (hoursBurningDistributionName == "Normal") {
           sampleNorm(filteredHoursBurningTable, nrow(.))
-
-          # If sampling from a gamma distribution
-        } else if (hoursBurningDistributionName == "Gamma") {
-          sampleGamma(filteredHoursBurningTable, nrow(.))
-
-          # Otherwise sample from a user defined distribution
+        
+        # Otherwise sample from a user defined distribution
         } else {
-          hoursBurningDistribution <- DistributionValue %>% dplyr::filter(Name == hoursBurningDistributionName, Value >= 1)
-          
-          if (nrow(hoursBurningDistribution) == 1) {
-            rep(hoursBurningDistribution$Value, nrow(.))
-          } else {
-            sample(hoursBurningDistribution$Value, nrow(.), replace= T, prob = hoursBurningDistribution$RelativeFrequency)
-          }
+          hoursBurningDistribution <- DistributionValue %>% filter(Name == hoursBurningDistributionName)
+          sample(hoursBurningDistribution$Value, nrow(.), replace= T, prob = hoursBurningDistribution$RelativeFrequency)
         },
-      HoursBurning = as.integer(round(HoursBurning, 0)),
       firezone = firezone,
       season = season) %>%
     return
@@ -147,32 +170,25 @@ sampleFireDuration <- function(season, firezone, data){
 
 # Define function to sample weather stream given season and weatherzone
 sampleWeather <- function(season, weatherzone, data) {
-  
   # Filter weather by season and weather zone
   localWeather <- WeatherStream %>%
-    dplyr::filter(
-      Season == season | is.na(Season) | Season == "All" | season == "All",
-      WeatherZone == weatherzone | is.na(WeatherZone)) %>%
-    dplyr::select(-Season, -WeatherZone) %>%
-    dplyr::arrange(Order)
-
-  if (nrow(localWeather) == 0)
-    stop("Could not find any daily weather records for the Season \"", season, "\" and Weather Zone \"", weatherzone, "\". Please add daily weather records as needed or check ignition distribution if this combination is invalid.")
-
+    filter(Season == season | is.na(Season), WeatherZone == weatherzone | is.na(WeatherZone)) %>%
+    dplyr::select(-Season, -WeatherZone)
+  
   # Sample rows of the weather stream randomly
   weatherIndex <- sample(nrow(localWeather), nrow(data), replace = T)
-
+  
   # If sampling sequentially, modify the sampled weather stream accordingly
   if(WeatherOptions$SampleSequentially)
-    weatherIndex <- data$BurnDay %>%
-    imap_int(
-      function(burnDay, position, weatherIndex)
-        as.integer(weatherIndex[position - (burnDay - 1)] + (burnDay - 1)) %>% min(nrow(localWeather)),
-      weatherIndex)
-
+    weatherIndex <- data$BurnDay %>% 
+      imap_int(
+        function(burnDay, position, weatherIndex)
+          as.integer(weatherIndex[position - (burnDay - 1)] + (burnDay - 1)) %>% min(nrow(localWeather)),
+        weatherIndex)
+  
   # Update SyncroSim progress bar
   progressBar()
-
+  
   # Convert weather indices to weather data and return
   data %>%
     dplyr::select(Iteration, FireID, BurnDay, HoursBurning) %>%
@@ -182,11 +198,20 @@ sampleWeather <- function(season, weatherzone, data) {
 
 # Determine Fire Zone and Weather Zone for each ignition ----
 DeterministicIgnitionLocation <- DeterministicIgnitionLocation %>%
-  joinZoneByLatLong(
-    fireZoneRaster = fireZoneRaster,
-    weatherZoneRaster = weatherZoneRaster,
-    sampleMissing = T) %>%
-  dplyr::select(-cell)
+  # Only consider iterations this job is responsible for
+  filter(Iteration %in% iterations) %>%
+  
+  # Determine fire zone and weather zone using the respective maps
+  mutate(
+    cell = cellFromRowCol(fuelsRaster, Y, X),
+    weatherzoneID = ifelse(!is.null(weatherZoneRaster), weatherZoneRaster[cell], 0),
+    firezoneID = ifelse(!is.null(fireZoneRaster), fireZoneRaster[cell], 0),
+    WeatherZone = lookup(weatherzoneID, WeatherZoneTable$ID, WeatherZoneTable$Name),
+    FireZone = lookup(firezoneID, FireZoneTable$ID, FireZoneTable$Name)
+  ) %>%
+  
+  # Clean up
+  dplyr::select(-cell, -firezoneID, -weatherzoneID)
 
 updateRunLog("Finished preparing inputs in ", updateBreakpoint())
 
@@ -204,24 +229,23 @@ progressBar(type = "message", message = "Sampling burning conditions...")
 DeterministicBurnConditions <- DeterministicIgnitionLocation %>%
   # Rename some variables to avoid collisions when filtering other tables
   rename(season = Season, firezone = FireZone, weatherzone = WeatherZone) %>%
-
+  
   # Group by season and fire zone to sample fire duration and hours burning
   group_by(season, firezone) %>%
   nest %>%
   pmap_dfr(sampleFireDuration) %>%
-
+  
   # Group season and weather zone to sample weather
   group_by(season, weatherzone) %>%
   nest %>%
   pmap_dfr(sampleWeather) %>%
-
+  
   # Clean up
   arrange(Iteration, FireID, BurnDay) %>%
-  dplyr::select(-Order) %>% 
   as.data.frame()
 
 # Save Output
-saveDatasheet(myScenario, DeterministicBurnConditions, "burnP3Plus_DeterministicBurnCondition", append = F)
+saveDatasheet(myScenario, DeterministicBurnConditions, "burnP3Plus_DeterministicBurnCondition", append = T)
 
 # Wrapup the SyncroSim progress bar
 progressBar("end")

@@ -1,8 +1,6 @@
 .Rhistory
 .vs
 .metadata
-.vscode
-.RData
 
 # Documentation
 _site
@@ -10,6 +8,4 @@ _site
 .jekyll-cache
 .jekyll-metadata
 vendor
-*.code-workspace
-.Rproj.user
-BurnP3Plus.Rproj
+
